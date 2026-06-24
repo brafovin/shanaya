@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RobloKick - Roblox x FIFA</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: radial-gradient(ellipse at center, #0f0f2e 0%, #000010 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    overflow: hidden;
+  }
+  #header {
+    color: #FFD700;
+    font-size: 28px;
+    font-weight: 900;
+    letter-spacing: 4px;
+    text-shadow: 0 0 20px #FFD700, 0 0 40px #FF8C00;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+  }
+  #scoreboard {
+    display: flex;
+    gap: 40px;
+    align-items: center;
+    margin-bottom: 10px;
+    background: rgba(0,0,0,0.5);
+    border: 2px solid #FFD700;
+    border-radius: 12px;
+    padding: 6px 30px;
+  }
+  .team-score {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .team-name { color: #aaa; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; }
+  .score-num { color: white; font-size: 36px; font-weight: 900; }
+  #player-score .score-num { color: #FF5555; }
+  #cpu-score .score-num { color: #5555FF; }
+  .score-divider { color: #FFD700; font-size: 28px; font-weight: bold; }
+  canvas {
+    border: 3px solid #FFD700;
+    border-radius: 4px;
+    box-shadow: 0 0 30px rgba(255,215,0,0.3), 0 0 60px rgba(255,140,0,0.15);
+    display: block;
+  }
+  #controls {
+    color: #666;
+    font-size: 13px;
+    margin-top: 10px;
+    letter-spacing: 1px;
+  }
+  #controls span { color: #FFD700; }
+</style>
+</head>
+<body>
+
+<div id="header">⚽ RobloKick ⚽</div>
+
+<div id="scoreboard">
+  <div class="team-score" id="player-score">
+    <div class="team-name">Du</div>
+    <div class="score-num" id="p-num">0</div>
+  </div>
+  <div class="score-divider">:</div>
+  <div class="team-score" id="cpu-score">
+    <div class="team-name">CPU</div>
+    <div class="score-num" id="c-num">0</div>
+  </div>
+</div>
+
+<canvas id="c" width="820" height="520"></canvas>
+
+<div id="controls">
+  <span>WASD</span> / <span>Pfeiltasten</span> bewegen &nbsp;|&nbsp; <span>SPACE</span> schießen
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ─── FELD ───────────────────────────────────────────────
+const F = { x: 60, y: 60, w: W - 120, h: H - 120 };
+const GH = 120, GW = 28;
+const GY = (H - GH) / 2;
+
+// ─── ZUSTAND ─────────────────────────────────────────────
+let state = 'playing';
+let pScore = 0, cScore = 0;
+const WIN = 3;
+let goalTimer = 0, goalScorer = '';
+let fireworks = [];
+let particles = [];
+let surpriseItems = [];
+let stars = [];
+let trophyBounce = 0;
+let trophyDir = 1;
+
+// ─── SPIELER ─────────────────────────────────────────────
+const player = {
+  x: F.x + 160, y: H / 2,
+  w: 28, h: 42, speed: 4.5,
+  vx: 0, vy: 0,
+  color: '#E83A3A', shirtAccent: '#FF7777', pantsColor: '#222266',
+  headColor: '#F5CBA7',
+  kickCD: 0, isKicking: false, kickTimer: 0, kickDir: 1,
+  facing: 1, moving: false, stepT: 0
+};
+const cpu = {
+  x: F.x + F.w - 160, y: H / 2,
+  w: 28, h: 42, speed: 3.2,
+  vx: 0, vy: 0,
+  color: '#3A6AE8', shirtAccent: '#7799FF', pantsColor: '#221100',
+  headColor: '#F5CBA7',
+  kickCD: 0, isKicking: false, kickTimer: 0,
+  facing: -1, moving: false, stepT: 0
+};
+const ball = {
+  x: W / 2, y: H / 2,
+  r: 13, vx: 0, vy: 0,
+  friction: 0.975, spin: 0,
+  lastTouch: null
+};
+
+// ─── INPUT ───────────────────────────────────────────────
+const keys = {};
+document.addEventListener('keydown', e => { keys[e.code] = true; e.preventDefault(); });
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// ─── RESET ───────────────────────────────────────────────
+function resetPositions(scorer) {
+  player.x = F.x + 160; player.y = H / 2; player.vx = 0; player.vy = 0;
+  cpu.x = F.x + F.w - 160; cpu.y = H / 2; cpu.vx = 0; cpu.vy = 0;
+  ball.x = W / 2; ball.y = H / 2; ball.vx = 0; ball.vy = 0; ball.spin = 0;
+  if (scorer === 'player') ball.vx = -2;
+  else ball.vx = 2;
+}
+
+function fullReset() {
+  pScore = 0; cScore = 0;
+  document.getElementById('p-num').textContent = '0';
+  document.getElementById('c-num').textContent = '0';
+  state = 'playing';
+  fireworks = []; particles = []; surpriseItems = []; stars = [];
+  canvas.onclick = null;
+  resetPositions(null);
+}
+
+// ─── FEUERWERK ───────────────────────────────────────────
+function spawnFirework(x, y) {
+  const colors = ['#FF4444','#FFD700','#44FF88','#4488FF','#FF88FF','#FF8844','#FFFFFF'];
+  const c = colors[Math.floor(Math.random() * colors.length)];
+  for (let i = 0; i < 30; i++) {
+    const a = (i / 30) * Math.PI * 2;
+    const sp = 3 + Math.random() * 6;
+    fireworks.push({
+      x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      life: 1, maxLife: 1, color: c, size: 3 + Math.random() * 3
+    });
+  }
+}
+
+function spawnGoalParticles() {
+  for (let i = 0; i < 80; i++) {
+    const colors = ['#FFD700','#FF4444','#44FF88','#4488FF','#FF88FF'];
+    particles.push({
+      x: W / 2 + (Math.random() - 0.5) * 300,
+      y: H / 2 + (Math.random() - 0.5) * 200,
+      vx: (Math.random() - 0.5) * 8,
+      vy: (Math.random() - 0.5) * 8 - 4,
+      life: 1, size: 6 + Math.random() * 8,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      rot: Math.random() * Math.PI * 2,
+      rotV: (Math.random() - 0.5) * 0.3
+    });
+  }
+}
+
+function initStars() {
+  stars = [];
+  for (let i = 0; i < 60; i++) {
+    stars.push({
+      x: Math.random() * W, y: Math.random() * H,
+      r: Math.random() * 2.5 + 0.5,
+      blink: Math.random() * Math.PI * 2,
+      speed: 0.03 + Math.random() * 0.05
+    });
+  }
+}
+initStars();
+
+// ─── ZEICHNEN: FELD ──────────────────────────────────────
+function drawField() {
+  // Rasen
+  for (let i = 0; i < 8; i++) {
+    ctx.fillStyle = i % 2 === 0 ? '#2E8B2E' : '#278027';
+    ctx.fillRect(F.x + i * (F.w / 8), F.y, F.w / 8, F.h);
+  }
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 2.5;
+
+  // Umrandung
+  ctx.strokeRect(F.x, F.y, F.w, F.h);
+
+  // Mittellinie
+  ctx.beginPath();
+  ctx.moveTo(W / 2, F.y);
+  ctx.lineTo(W / 2, F.y + F.h);
+  ctx.stroke();
+
+  // Mittelkreis
+  ctx.beginPath();
+  ctx.arc(W / 2, H / 2, 65, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.beginPath();
+  ctx.arc(W / 2, H / 2, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Strafräume links
+  const pa = 120, pw = 110;
+  ctx.strokeRect(F.x, H / 2 - pa / 2, pw, pa);
+  ctx.strokeRect(F.x, H / 2 - 55, 50, 110);
+  ctx.beginPath();
+  ctx.arc(F.x + pw, H / 2, 55, -Math.PI * 0.6, Math.PI * 0.6);
+  ctx.stroke();
+
+  // Strafräume rechts
+  ctx.strokeRect(F.x + F.w - pw, H / 2 - pa / 2, pw, pa);
+  ctx.strokeRect(F.x + F.w - 50, H / 2 - 55, 50, 110);
+  ctx.beginPath();
+  ctx.arc(F.x + F.w - pw, H / 2, 55, Math.PI * 0.4, Math.PI * 1.6);
+  ctx.stroke();
+
+  // Ecken
+  [F.x, F.x + F.w].forEach(cx => {
+    [F.y, F.y + F.h].forEach(cy => {
+      ctx.beginPath();
+      const dx = cx === F.x ? 1 : -1, dy = cy === F.y ? 1 : -1;
+      ctx.arc(cx, cy, 14, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+      ctx.stroke();
+    });
+  });
+  ctx.restore();
+
+  // Tore
+  function drawGoal(x, flipped) {
+    const gx = flipped ? x : x - GW;
+    ctx.fillStyle = '#C0C0C0';
+    ctx.fillRect(gx, GY, GW, GH);
+    // Netz-Muster
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 6; i++) {
+      ctx.beginPath();
+      ctx.moveTo(gx, GY + i * (GH / 5));
+      ctx.lineTo(gx + GW, GY + i * (GH / 5));
+      ctx.stroke();
+    }
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath();
+      ctx.moveTo(gx + i * (GW / 3), GY);
+      ctx.lineTo(gx + i * (GW / 3), GY + GH);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(gx, GY, GW, GH);
+  }
+  drawGoal(F.x, false);
+  drawGoal(F.x + F.w, true);
+}
+
+// ─── ZEICHNEN: CHARAKTER ─────────────────────────────────
+function drawChar(c, isPlayer) {
+  const { x, y, w, h, color, shirtAccent, pantsColor, headColor, isKicking, facing, moving, stepT } = c;
+
+  // Schatten
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(x, y + h / 2 + 4, w * 0.6, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  const ls = moving ? Math.sin(stepT) * 8 : 0;
+  const rs = moving ? -Math.sin(stepT) * 8 : 0;
+  const as = moving ? Math.sin(stepT) * 10 : 0;
+
+  // Beine
+  ctx.fillStyle = pantsColor;
+  const ly = y + h * 0.12;
+  // Linkes Bein
+  ctx.save();
+  ctx.translate(x - w * 0.15, ly);
+  ctx.rotate(ls * 0.05);
+  ctx.fillRect(-w * 0.2, 0, w * 0.38, h * 0.38);
+  ctx.restore();
+  // Rechtes Bein
+  ctx.save();
+  ctx.translate(x + w * 0.15, ly);
+  ctx.rotate(rs * 0.05);
+  ctx.fillRect(-w * 0.18, 0, w * 0.38, h * 0.38);
+  ctx.restore();
+
+  // Schuhe
+  ctx.fillStyle = '#111';
+  ctx.fillRect(x - w * 0.36, y + h * 0.44, w * 0.4, h * 0.1);
+  ctx.fillRect(x - w * 0.04, y + h * 0.44, w * 0.4, h * 0.1);
+
+  // Trikot (Körper)
+  ctx.fillStyle = color;
+  ctx.fillRect(x - w / 2, y - h * 0.28, w, h * 0.42);
+  // Streifen
+  ctx.fillStyle = shirtAccent;
+  ctx.fillRect(x - w * 0.1, y - h * 0.28, w * 0.2, h * 0.42);
+
+  // Arme
+  ctx.fillStyle = color;
+  // Linker Arm
+  ctx.save();
+  ctx.translate(x - w / 2, y - h * 0.2);
+  ctx.rotate(-as * 0.05);
+  ctx.fillRect(-w * 0.25, 0, w * 0.25, h * 0.3);
+  ctx.restore();
+  // Rechter Arm
+  ctx.save();
+  ctx.translate(x + w / 2, y - h * 0.2);
+  ctx.rotate(as * 0.05);
+  ctx.fillRect(0, 0, w * 0.25, h * 0.3);
+  ctx.restore();
+
+  // Kick-Animation
+  if (isKicking) {
+    ctx.fillStyle = pantsColor;
+    ctx.save();
+    ctx.translate(x + facing * w * 0.2, y + h * 0.12);
+    ctx.rotate(facing * 0.7);
+    ctx.fillRect(-w * 0.18, 0, w * 0.38, h * 0.45);
+    ctx.restore();
+    ctx.fillStyle = '#111';
+    ctx.save();
+    ctx.translate(x + facing * w * 0.2, y + h * 0.12);
+    ctx.rotate(facing * 0.7);
+    ctx.fillRect(-w * 0.22, h * 0.38, w * 0.46, h * 0.12);
+    ctx.restore();
+  }
+
+  // Kopf (blocky Roblox-Stil)
+  ctx.fillStyle = headColor;
+  ctx.fillRect(x - w * 0.42 + 2, y - h * 0.7, w * 0.84, h * 0.44);
+
+  // Augen
+  ctx.fillStyle = 'white';
+  ctx.fillRect(x - w * 0.32, y - h * 0.62, w * 0.24, w * 0.24);
+  ctx.fillRect(x + w * 0.08, y - h * 0.62, w * 0.24, w * 0.24);
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(x - w * 0.26, y - h * 0.57, w * 0.14, w * 0.14);
+  ctx.fillRect(x + w * 0.12, y - h * 0.57, w * 0.14, w * 0.14);
+  // Glanz
+  ctx.fillStyle = 'white';
+  ctx.fillRect(x - w * 0.24, y - h * 0.56, w * 0.06, w * 0.06);
+  ctx.fillRect(x + w * 0.14, y - h * 0.56, w * 0.06, w * 0.06);
+
+  // Lächeln
+  ctx.fillStyle = '#8B4513';
+  ctx.fillRect(x - w * 0.18, y - h * 0.37, w * 0.36, 3);
+
+  // Haare / Mütze
+  if (isPlayer) {
+    ctx.fillStyle = '#333';
+    ctx.fillRect(x - w * 0.44, y - h * 0.72, w * 0.88, 10);
+    ctx.fillStyle = '#FF5555';
+    ctx.fillRect(x - w * 0.44, y - h * 0.78, w * 0.88, 10);
+  } else {
+    ctx.fillStyle = '#333';
+    ctx.fillRect(x - w * 0.44, y - h * 0.72, w * 0.88, 10);
+    ctx.fillStyle = '#5555FF';
+    ctx.fillRect(x - w * 0.44, y - h * 0.78, w * 0.88, 10);
+  }
+
+  // Nummern-Rücken
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.font = `bold ${w * 0.38}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(isPlayer ? '1' : '9', x, y - h * 0.07);
+}
+
+// ─── ZEICHNEN: BALL ──────────────────────────────────────
+function drawBall() {
+  const { x, y, r, spin } = ball;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(spin);
+
+  // Schatten
+  ctx.restore();
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.ellipse(x, y + r + 3, r * 0.9, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(spin);
+
+  // Weißer Ball
+  const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.35, 0, 0, 0, r);
+  grad.addColorStop(0, '#ffffff');
+  grad.addColorStop(0.7, '#e0e0e0');
+  grad.addColorStop(1, '#b0b0b0');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Schwarze Felder (Fußball-Muster)
+  ctx.fillStyle = '#222';
+  // Mittel-Pentagon
+  ctx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+    const pr = r * 0.38;
+    if (i === 0) ctx.moveTo(Math.cos(a) * pr, Math.sin(a) * pr);
+    else ctx.lineTo(Math.cos(a) * pr, Math.sin(a) * pr);
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  // Außen-Pentagone
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+    const pr = r * 0.75;
+    ctx.save();
+    ctx.translate(Math.cos(a) * pr, Math.sin(a) * pr);
+    ctx.rotate(a + Math.PI / 2);
+    ctx.beginPath();
+    for (let j = 0; j < 5; j++) {
+      const ba = (j / 5) * Math.PI * 2 - Math.PI / 2;
+      const br = r * 0.22;
+      if (j === 0) ctx.moveTo(Math.cos(ba) * br, Math.sin(ba) * br);
+      else ctx.lineTo(Math.cos(ba) * br, Math.sin(ba) * br);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Rand
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Glanz
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.25, -r * 0.3, r * 0.2, r * 0.12, -0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ─── UPDATE: SPIELER ─────────────────────────────────────
+function updatePlayer(dt) {
+  let dx = 0, dy = 0;
+  if (keys['ArrowLeft'] || keys['KeyA']) dx -= 1;
+  if (keys['ArrowRight'] || keys['KeyD']) dx += 1;
+  if (keys['ArrowUp'] || keys['KeyW']) dy -= 1;
+  if (keys['ArrowDown'] || keys['KeyS']) dy += 1;
+
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len > 0) { dx /= len; dy /= len; }
+
+  player.x += dx * player.speed;
+  player.y += dy * player.speed;
+  player.moving = len > 0;
+  if (player.moving) player.stepT += 0.18;
+  if (dx !== 0) player.facing = dx > 0 ? 1 : -1;
+
+  // Grenzen
+  player.x = Math.max(F.x + player.w / 2, Math.min(F.x + F.w - player.w / 2, player.x));
+  player.y = Math.max(F.y + player.h / 2, Math.min(F.y + F.h - player.h / 2, player.y));
+
+  // Schießen
+  if (player.kickCD > 0) player.kickCD--;
+  if (player.kickTimer > 0) { player.kickTimer--; if (!player.kickTimer) player.isKicking = false; }
+
+  if (keys['Space'] && player.kickCD === 0) {
+    const bx = ball.x - player.x, by = ball.y - player.y;
+    const bd = Math.sqrt(bx * bx + by * by);
+    if (bd < 55) {
+      const nx = bd > 0 ? bx / bd : player.facing, ny = bd > 0 ? by / bd : 0;
+      ball.vx = nx * 13 + dx * 4;
+      ball.vy = ny * 13 + dy * 4;
+      ball.spin += nx * 0.5;
+      ball.lastTouch = 'player';
+      player.kickCD = 25;
+      player.isKicking = true;
+      player.kickTimer = 18;
+      // Kick-Partikel
+      for (let i = 0; i < 6; i++) {
+        particles.push({
+          x: ball.x, y: ball.y,
+          vx: (Math.random() - 0.5) * 5, vy: (Math.random() - 0.5) * 5 - 2,
+          life: 0.8, size: 5, color: '#FFD700', rot: 0, rotV: 0
+        });
+      }
+    }
+  }
+
+  pushBall(player);
+}
+
+// ─── UPDATE: CPU AI ──────────────────────────────────────
+function updateCPU() {
+  // Ziel: Ball stehlen und ins linke Tor schießen
+  const toBallX = ball.x - cpu.x;
+  const toBallY = ball.y - cpu.y;
+  const dist = Math.sqrt(toBallX * toBallX + toBallY * toBallY);
+
+  let tx = ball.x, ty = ball.y;
+
+  // Wenn CPU den Ball hat, aufs Tor zielen
+  if (dist < 80) {
+    // Ziel: linkes Tor
+    const goalX = F.x - GW / 2, goalY = H / 2;
+    tx = goalX; ty = goalY;
+    // Kick Richtung Tor
+    if (dist < 50 && cpu.kickCD === 0) {
+      const gx = goalX - ball.x, gy = goalY - ball.y;
+      const gl = Math.sqrt(gx * gx + gy * gy);
+      ball.vx += (gx / gl) * 9;
+      ball.vy += (gy / gl) * 9;
+      ball.spin -= 0.4;
+      ball.lastTouch = 'cpu';
+      cpu.kickCD = 30;
+      cpu.isKicking = true;
+      cpu.kickTimer = 18;
+    }
+  }
+
+  const dx = tx - cpu.x, dy = ty - cpu.y;
+  const d = Math.sqrt(dx * dx + dy * dy);
+  if (d > 3) {
+    cpu.x += (dx / d) * cpu.speed;
+    cpu.y += (dy / d) * cpu.speed;
+    cpu.moving = true;
+    cpu.stepT += 0.15;
+  } else {
+    cpu.moving = false;
+  }
+  if (dx !== 0) cpu.facing = dx > 0 ? 1 : -1;
+
+  if (cpu.kickCD > 0) cpu.kickCD--;
+  if (cpu.kickTimer > 0) { cpu.kickTimer--; if (!cpu.kickTimer) cpu.isKicking = false; }
+
+  cpu.x = Math.max(F.x + cpu.w / 2, Math.min(F.x + F.w - cpu.w / 2, cpu.x));
+  cpu.y = Math.max(F.y + cpu.h / 2, Math.min(F.y + F.h - cpu.h / 2, cpu.y));
+
+  pushBall(cpu);
+}
+
+function pushBall(ch) {
+  const dx = ball.x - ch.x, dy = ball.y - ch.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const minD = ch.w / 2 + ball.r + 2;
+  if (dist < minD && dist > 0) {
+    const nx = dx / dist, ny = dy / dist;
+    ball.x = ch.x + nx * (minD + 0.5);
+    ball.y = ch.y + ny * (minD + 0.5);
+    const dot = ball.vx * nx + ball.vy * ny;
+    if (dot < 0) {
+      ball.vx -= dot * nx * 1.2;
+      ball.vy -= dot * ny * 1.2;
+    }
+    ball.spin += nx * 0.3;
+  }
+}
+
+// ─── UPDATE: BALL ────────────────────────────────────────
+function updateBall() {
+  ball.x += ball.vx;
+  ball.y += ball.vy;
+  ball.vx *= ball.friction;
+  ball.vy *= ball.friction;
+  ball.spin *= 0.96;
+
+  // Links: Tor-Linie
+  if (ball.x - ball.r <= F.x) {
+    if (ball.y > GY && ball.y < GY + GH) {
+      cScore++;
+      document.getElementById('c-num').textContent = cScore;
+      goalScorer = 'cpu';
+      state = 'goal';
+      goalTimer = 120;
+      spawnGoalParticles();
+      for (let i = 0; i < 4; i++) spawnFirework(F.x + 40 + Math.random() * 100, GY + Math.random() * GH);
+      return;
+    }
+    ball.x = F.x + ball.r + 1;
+    ball.vx *= -0.65;
+    ball.spin *= -0.5;
+  }
+
+  // Rechts: Tor-Linie
+  if (ball.x + ball.r >= F.x + F.w) {
+    if (ball.y > GY && ball.y < GY + GH) {
+      pScore++;
+      document.getElementById('p-num').textContent = pScore;
+      goalScorer = 'player';
+      state = 'goal';
+      goalTimer = 120;
+      spawnGoalParticles();
+      for (let i = 0; i < 4; i++) spawnFirework(F.x + F.w - 40 - Math.random() * 100, GY + Math.random() * GH);
+      return;
+    }
+    ball.x = F.x + F.w - ball.r - 1;
+    ball.vx *= -0.65;
+    ball.spin *= -0.5;
+  }
+
+  if (ball.y - ball.r <= F.y) { ball.y = F.y + ball.r + 1; ball.vy *= -0.65; }
+  if (ball.y + ball.r >= F.y + F.h) { ball.y = F.y + F.h - ball.r - 1; ball.vy *= -0.65; }
+}
+
+// ─── UPDATE: PARTIKEL / FEUERWERK ────────────────────────
+function updateEffects() {
+  fireworks = fireworks.filter(f => f.life > 0);
+  fireworks.forEach(f => {
+    f.x += f.vx; f.y += f.vy; f.vy += 0.12; f.life -= 0.018;
+    f.vx *= 0.99; f.vy *= 0.99;
+  });
+  particles = particles.filter(p => p.life > 0);
+  particles.forEach(p => {
+    p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life -= 0.02;
+    p.rot += p.rotV;
+    p.vx *= 0.95; p.vy *= 0.95;
+  });
+  surpriseItems.forEach(s => {
+    s.y += s.vy; s.x += s.vx; s.rot += s.rotV;
+    s.vy *= 0.999;
+    if (s.y > H + 60) { s.y = -60; s.x = Math.random() * W; s.vy = 1 + Math.random() * 2; }
+  });
+}
+
+function drawEffects() {
+  fireworks.forEach(f => {
+    ctx.globalAlpha = f.life;
+    ctx.fillStyle = f.color;
+    ctx.shadowBlur = 8; ctx.shadowColor = f.color;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, f.size, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.shadowBlur = 0;
+
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+    ctx.restore();
+  });
+  ctx.globalAlpha = 1;
+}
+
+// ─── HUD OVERLAY ─────────────────────────────────────────
+function drawGoalOverlay() {
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Goldener Puls
+  const pulse = 0.85 + Math.sin(Date.now() / 120) * 0.15;
+  ctx.save();
+  ctx.translate(W / 2, H / 2 - 30);
+  ctx.scale(pulse, pulse);
+  ctx.fillStyle = '#FFD700';
+  ctx.strokeStyle = '#FF8C00';
+  ctx.lineWidth = 3;
+  ctx.font = 'bold 78px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.strokeText('⚽ TOR! ⚽', 0, 0);
+  ctx.fillText('⚽ TOR! ⚽', 0, 0);
+  ctx.restore();
+
+  ctx.fillStyle = 'white';
+  ctx.font = 'bold 26px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const scorer = goalScorer === 'player' ? '🔴 Du hast getroffen!' : '🔵 CPU-Treffer!';
+  ctx.fillText(scorer, W / 2, H / 2 + 45);
+
+  if (Math.random() < 0.2) spawnFirework(Math.random() * W, Math.random() * H * 0.7);
+}
+
+function drawWinScreen() {
+  ctx.fillStyle = 'rgba(0,0,15,0.88)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Sterne-Hintergrund
+  stars.forEach(s => {
+    s.blink += s.speed;
+    const a = 0.4 + Math.sin(s.blink) * 0.4;
+    ctx.globalAlpha = a;
+    ctx.fillStyle = 'white';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  // Fallende Überraschungs-Symbole
+  surpriseItems.forEach(s => {
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.rot);
+    ctx.font = `${s.size}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.globalAlpha = 0.9;
+    ctx.fillText(s.emoji, 0, 0);
+    ctx.restore();
+  });
+  ctx.globalAlpha = 1;
+
+  // Pokal-Animation
+  trophyBounce += 0.06 * trophyDir;
+  if (trophyBounce > 1 || trophyBounce < -1) trophyDir *= -1;
+
+  ctx.font = '90px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🏆', W / 2, H / 2 - 110 + trophyBounce * 10);
+
+  // Titel
+  const grd = ctx.createLinearGradient(0, H / 2 - 60, 0, H / 2 - 10);
+  grd.addColorStop(0, '#FFD700');
+  grd.addColorStop(0.5, '#FFA500');
+  grd.addColorStop(1, '#FF6B00');
+  ctx.fillStyle = grd;
+  ctx.font = 'bold 52px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('DU HAST GEWONNEN!', W / 2, H / 2 - 35);
+
+  // ──── ÜBERRASCHUNG ────
+  ctx.fillStyle = 'rgba(255, 215, 0, 0.15)';
+  ctx.beginPath();
+  ctx.roundRect(W / 2 - 310, H / 2 + 5, 620, 80, 16);
+  ctx.fill();
+  ctx.strokeStyle = '#FFD700';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(W / 2 - 310, H / 2 + 5, 620, 80, 16);
+  ctx.stroke();
+
+  ctx.fillStyle = '#FFD700';
+  ctx.font = 'bold 18px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('🎁 ÜBERRASCHUNG: Du bist jetzt ein Roblox-Fußballlegende! 🌟', W / 2, H / 2 + 35);
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.font = '15px Arial';
+  ctx.fillText('Du hast das ultimative RobloKick-Turnier gewonnen! ⭐ Dein Avatar wird zur Weltlegende! ⭐', W / 2, H / 2 + 62);
+
+  // Ergebnis
+  ctx.fillStyle = 'white';
+  ctx.font = 'bold 22px Arial';
+  ctx.fillText(`Endergebnis: ${pScore} : ${cScore}`, W / 2, H / 2 + 105);
+
+  // Restart-Button (pulsierend)
+  const p = 1 + Math.sin(Date.now() / 300) * 0.04;
+  ctx.save();
+  ctx.translate(W / 2, H / 2 + 155);
+  ctx.scale(p, p);
+  const bg = ctx.createLinearGradient(-110, -28, 110, 28);
+  bg.addColorStop(0, '#22c55e');
+  bg.addColorStop(1, '#16a34a');
+  ctx.fillStyle = bg;
+  ctx.shadowBlur = 20; ctx.shadowColor = '#22c55e';
+  ctx.beginPath();
+  ctx.roundRect(-110, -28, 220, 56, 12);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'white';
+  ctx.font = 'bold 22px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🔄 NOCHMAL SPIELEN', 0, 0);
+  ctx.restore();
+
+  if (Math.random() < 0.12) spawnFirework(Math.random() * W, Math.random() * H * 0.6);
+
+  canvas.onclick = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const mx = (e.clientX - r.left) * (W / r.width);
+    const my = (e.clientY - r.top) * (H / r.height);
+    if (mx > W / 2 - 110 && mx < W / 2 + 110 && my > H / 2 + 127 && my < H / 2 + 183) {
+      fullReset();
+    }
+  };
+}
+
+function drawLoseScreen() {
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.font = '80px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('😤', W / 2, H / 2 - 100);
+
+  ctx.fillStyle = '#FF4444';
+  ctx.font = 'bold 52px Arial';
+  ctx.fillText('NIEDERLAGE!', W / 2, H / 2 - 25);
+
+  ctx.fillStyle = '#aaa';
+  ctx.font = '22px Arial';
+  ctx.fillText('Die CPU war diesmal stärker...', W / 2, H / 2 + 30);
+  ctx.fillText(`Ergebnis: ${pScore} : ${cScore}`, W / 2, H / 2 + 65);
+
+  const p = 1 + Math.sin(Date.now() / 300) * 0.04;
+  ctx.save();
+  ctx.translate(W / 2, H / 2 + 130);
+  ctx.scale(p, p);
+  const bg = ctx.createLinearGradient(-110, -28, 110, 28);
+  bg.addColorStop(0, '#3B82F6');
+  bg.addColorStop(1, '#1D4ED8');
+  ctx.fillStyle = bg;
+  ctx.shadowBlur = 20; ctx.shadowColor = '#3B82F6';
+  ctx.beginPath();
+  ctx.roundRect(-110, -28, 220, 56, 12);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'white';
+  ctx.font = 'bold 20px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🔄 NOCHMAL VERSUCHEN', 0, 0);
+  ctx.restore();
+
+  canvas.onclick = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const mx = (e.clientX - r.left) * (W / r.width);
+    const my = (e.clientY - r.top) * (H / r.height);
+    if (mx > W / 2 - 110 && mx < W / 2 + 110 && my > H / 2 + 102 && my < H / 2 + 158) {
+      fullReset();
+    }
+  };
+}
+
+// ─── HAUPT-LOOP ──────────────────────────────────────────
+function loop() {
+  ctx.clearRect(0, 0, W, H);
+
+  drawField();
+
+  updateEffects();
+
+  if (state === 'playing') {
+    updatePlayer();
+    updateCPU();
+    updateBall();
+    if (pScore >= WIN) {
+      state = 'won';
+      // Surprise-Emojis
+      const emojis = ['🏆','⭐','🌟','🎁','🎉','🎊','🔥','💎','👑','🎯'];
+      surpriseItems = [];
+      for (let i = 0; i < 20; i++) {
+        surpriseItems.push({
+          x: Math.random() * W, y: -80 - Math.random() * 300,
+          vx: (Math.random() - 0.5) * 2, vy: 1.5 + Math.random() * 2,
+          rot: Math.random() * Math.PI * 2, rotV: (Math.random() - 0.5) * 0.08,
+          size: 24 + Math.random() * 22,
+          emoji: emojis[Math.floor(Math.random() * emojis.length)]
+        });
+      }
+      for (let i = 0; i < 8; i++) spawnFirework(Math.random() * W, Math.random() * H * 0.5);
+    } else if (cScore >= WIN) {
+      state = 'lost';
+    }
+  } else if (state === 'goal') {
+    drawChar(player, true);
+    drawChar(cpu, false);
+    drawBall();
+    drawEffects();
+    drawGoalOverlay();
+    goalTimer--;
+    if (goalTimer <= 0) {
+      state = 'playing';
+      canvas.onclick = null;
+      resetPositions(goalScorer);
+      particles = [];
+    }
+    requestAnimationFrame(loop);
+    return;
+  }
+
+  if (state !== 'won' && state !== 'lost') {
+    drawChar(player, true);
+    drawChar(cpu, false);
+    drawBall();
+    drawEffects();
+  }
+
+  if (state === 'won') { drawEffects(); drawWinScreen(); }
+  if (state === 'lost') { drawLoseScreen(); }
+
+  requestAnimationFrame(loop);
+}
+
+resetPositions(null);
+loop();
+</script>
+</body>
+</html>
